@@ -3,6 +3,7 @@
 from collections import OrderedDict
 from datetime import datetime
 import os
+from django.conf import settings
 from django.template import Context
 from django.template.loader import get_template
 
@@ -250,6 +251,23 @@ def export_tutorial_to_md(tutorial):
     return contenu_html
 
 
+def get_sep(msg):
+    """
+    Handle separator for commit msg
+    """
+    if msg is None or msg.strip() == "":
+        return ""
+    else:
+        return ":"
+
+
+def get_text_is_empty(msg):
+    if msg is None or msg.strip() == "":
+        return ""
+    else:
+        return msg
+
+
 def move(obj, new_pos, position_f, parent_f, children_fn):
     """Move an object and reorder other objects affected by moving.
 
@@ -407,7 +425,7 @@ def check_json(data, tutorial, zip):
 
 
 def import_archive(request):
-    from zds.tutorial.models import Tutorial
+    from zds.tutorial.models import PubliableContent
     import zipfile
     import shutil
     import os
@@ -420,7 +438,7 @@ def import_archive(request):
             import json as json_reader
 
     archive = request.FILES["file"]
-    tutorial = Tutorial.objects.get(pk=request.POST["tutorial"])
+    tutorial = PubliableContent.objects.get(pk=request.POST["tutorial"])
     ext = str(archive).split(".")[-1]
     if ext == "zip":
         zfile = zipfile.ZipFile(archive, "a")
@@ -488,7 +506,7 @@ def import_archive(request):
         aut_user = str(request.user.pk)
         aut_email = str(request.user.email)
         if aut_email is None or aut_email.strip() == "":
-            aut_email = "inconnu@zestedesavoir.com"
+            aut_email = "inconnu@".format(settings.ZDS_APP['site']['dns'])
         com = index.commit(msg.encode("utf-8"),
                            author=Actor(aut_user, aut_email),
                            committer=Actor(aut_user, aut_email))

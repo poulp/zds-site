@@ -41,7 +41,7 @@ from lxml import etree
 
 from forms import TutorialForm, PartForm, ChapterForm, EmbdedChapterForm, \
     ExtractForm, ImportForm, ImportArchiveForm, NoteForm, AskValidationForm, ValidForm, RejectForm
-from models import Tutorial, Part, Chapter, Extract, Validation, never_read, \
+from models import PubliableContent, Part, Chapter, Extract, Validation, never_read, \
     mark_read, Note
 from zds.gallery.models import Gallery, UserGallery, Image
 from zds.member.decorator import can_write_and_read_now
@@ -57,7 +57,7 @@ from zds.utils.mps import send_mp
 from zds.utils.forums import create_topic, send_post, lock_topic, unlock_topic
 from zds.utils.paginator import paginator_range
 from zds.utils.templatetags.emarkdown import emarkdown
-from zds.utils.tutorials import get_blob, export_tutorial_to_md, move, import_archive
+from zds.utils.tutorials import get_blob, export_tutorial_to_md, move, get_sep, get_text_is_empty, import_archive
 from zds.utils.misc import compute_hash, content_has_changed
 
 
@@ -85,14 +85,14 @@ def index(request):
         tag = None
     if tag is None:
         tutorials = \
-            Tutorial.objects.filter(sha_public__isnull=False).exclude(sha_public="") \
+            PubliableContent.objects.filter(sha_public__isnull=False).exclude(sha_public="") \
             .order_by("-pubdate") \
             .all()
     else:
         # The tag isn't None and exist in the system. We can use it to retrieve
         # all tutorials in the subcategory specified.
 
-        tutorials = Tutorial.objects.filter(
+        tutorials = PubliableContent.objects.filter(
             sha_public__isnull=False,
             subcategory__in=[tag]).exclude(sha_public="").order_by("-pubdate").all()
 
@@ -206,7 +206,7 @@ def diff(request, tutorial_pk, tutorial_slug):
         sha = request.GET["sha"]
     except KeyError:
         raise Http404
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
     if request.user not in tutorial.authors.all():
         if not request.user.has_perm("tutorial.change_tutorial"):
             raise PermissionDenied
@@ -226,7 +226,7 @@ def diff(request, tutorial_pk, tutorial_slug):
 def history(request, tutorial_pk, tutorial_slug):
     """History of the tutorial."""
 
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
     if request.user not in tutorial.authors.all():
         if not request.user.has_perm("tutorial.change_tutorial"):
             raise PermissionDenied
@@ -243,7 +243,7 @@ def history(request, tutorial_pk, tutorial_slug):
 def history_validation(request, tutorial_pk):
     """History of the validation of a tutorial."""
 
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
 
     # Get subcategory to filter validations.
 
@@ -279,7 +279,7 @@ def reject_tutorial(request):
         tutorial_pk = request.POST["tutorial"]
     except KeyError:
         raise Http404
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
     validation = Validation.objects.filter(
         tutorial__pk=tutorial_pk,
         version=tutorial.sha_validation).latest("date_proposition")
@@ -300,6 +300,7 @@ def reject_tutorial(request):
         # send feedback
 
         for author in tutorial.authors.all():
+            comment_reject = '\n'.join(['> '+line for line in validation.comment_validator.split('\n')])
             msg = (
                 u'Désolé **{0}**, ton zeste **{1}** n\'a malheureusement '
                 u'pas passé l’étape de validation. Mais ne désespère pas, '
@@ -312,9 +313,9 @@ def reject_tutorial(request):
                     author.username,
                     tutorial.title,
                     validation.validator.username,
-                    settings.SITE_URL + validation.validator.profile.get_absolute_url(),
-                    validation.comment_validator))
-            bot = get_object_or_404(User, username=settings.BOT_ACCOUNT)
+                    settings.ZDS_APP['site']['url'] + validation.validator.profile.get_absolute_url(),
+                    comment_reject))
+            bot = get_object_or_404(User, username=settings.ZDS_APP['member']['bot_account'])
             send_mp(
                 bot,
                 [author],
@@ -347,7 +348,7 @@ def valid_tutorial(request):
         tutorial_pk = request.POST["tutorial"]
     except KeyError:
         raise Http404
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
     validation = Validation.objects.filter(
         tutorial__pk=tutorial_pk,
         version=tutorial.sha_validation).latest("date_proposition")
@@ -385,10 +386,10 @@ def valid_tutorial(request):
                 u'qu\'un sujet abandonné !'.format(
                     author.username,
                     tutorial.title,
-                    settings.SITE_URL + tutorial.get_absolute_url_online(),
+                    settings.ZDS_APP['site']['url'] + tutorial.get_absolute_url_online(),
                     validation.validator.username,
-                    settings.SITE_URL + validation.validator.profile.get_absolute_url()))
-            bot = get_object_or_404(User, username=settings.BOT_ACCOUNT)
+                    settings.ZDS_APP['site']['url'] + validation.validator.profile.get_absolute_url()))
+            bot = get_object_or_404(User, username=settings.ZDS_APP['member']['bot_account'])
             send_mp(
                 bot,
                 [author],
@@ -417,7 +418,7 @@ def invalid_tutorial(request, tutorial_pk):
 
     # Retrieve current tutorial
 
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
     un_mep(tutorial)
     validation = Validation.objects.filter(
         tutorial__pk=tutorial_pk,
@@ -452,7 +453,7 @@ def ask_validation(request):
         tutorial_pk = request.POST["tutorial"]
     except KeyError:
         raise Http404
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
 
     # If the user isn't an author of the tutorial or isn't in the staff, he
     # hasn't permission to execute this method:
@@ -481,7 +482,7 @@ def ask_validation(request):
     if old_validator is not None:
         validation.validator = old_validator
         validation.date_reserve
-        bot = get_object_or_404(User, username=settings.BOT_ACCOUNT)
+        bot = get_object_or_404(User, username=settings.ZDS_APP['member']['bot_account'])
         msg = \
             (u'Bonjour {0},'
              u'Le tutoriel *{1}* que tu as réservé a été mis à jour en zone de validation, '
@@ -513,7 +514,7 @@ def delete_tutorial(request, tutorial_pk):
 
     # Retrieve current tutorial
 
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
 
     # If the user isn't an author of the tutorial or isn't in the staff, he
     # hasn't permission to execute this method:
@@ -537,7 +538,7 @@ def delete_tutorial(request, tutorial_pk):
 
         # Delete the tutorial on the repo and on the database.
 
-        old_slug = os.path.join(settings.REPO_PATH, tutorial.get_phy_slug())
+        old_slug = os.path.join(settings.ZDS_APP['tutorial']['repo_path'], tutorial.get_phy_slug())
         maj_repo_tuto(request, old_slug_path=old_slug, tuto=tutorial,
                       action="del")
         messages.success(request,
@@ -568,7 +569,7 @@ def modify_tutorial(request):
     if not request.method == "POST":
         raise Http404
     tutorial_pk = request.POST["tutorial"]
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
     # User actions
 
     if request.user in tutorial.authors.all() or request.user.has_perm("tutorial.change_tutorial"):
@@ -607,10 +608,10 @@ def modify_tutorial(request):
                 u'Tu peux maintenant commencer à rédiger !'.format(
                     author.username,
                     tutorial.title,
-                    settings.SITE_URL + tutorial.get_absolute_url(),
-                    settings.SITE_URL + reverse("zds.member.views.tutorials"))
+                    settings.ZDS_APP['site']['url'] + tutorial.get_absolute_url(),
+                    settings.ZDS_APP['site']['url'] + reverse("zds.member.views.tutorials"))
             )
-            bot = get_object_or_404(User, username=settings.BOT_ACCOUNT)
+            bot = get_object_or_404(User, username=settings.ZDS_APP['member']['bot_account'])
             send_mp(
                 bot,
                 [author],
@@ -657,9 +658,9 @@ def modify_tutorial(request):
                 u'pourra plus y accéder.\n'.format(
                     author.username,
                     tutorial.title,
-                    settings.SITE_URL + tutorial.get_absolute_url())
+                    settings.ZDS_APP['site']['url'] + tutorial.get_absolute_url())
             )
-            bot = get_object_or_404(User, username=settings.BOT_ACCOUNT)
+            bot = get_object_or_404(User, username=settings.ZDS_APP['member']['bot_account'])
             send_mp(
                 bot,
                 [author],
@@ -675,20 +676,21 @@ def modify_tutorial(request):
             if "version" in request.POST:
                 tutorial.sha_beta = request.POST['version']
                 tutorial.save()
-                topic = Topic.objects.filter(key=tutorial.pk, forum__pk=settings.BETA_FORUM_ID).first()
+                topic = Topic.objects.filter(key=tutorial.pk, forum__pk=settings.ZDS_APP['forum']['beta_forum_id'])\
+                    .first()
                 msg = \
                     (u'Bonjour à tous,\n\n'
                      u'J\'ai commencé ({0}) la rédaction d\'un tutoriel dont l\'intitulé est **{1}**.\n\n'
-                     u'J\'aimerai obtenir un maximum de retour sur celui-ci, sur le fond ainsi que '
+                     u'J\'aimerais obtenir un maximum de retour sur celui-ci, sur le fond ainsi que '
                      u'sur la forme, afin de proposer en validation un texte de qualité.'
-                     u'\n\nSi vous êtes interessé, cliquez ci-dessous '
+                     u'\n\nSi vous êtes intéressé, cliquez ci-dessous '
                      u'\n\n-> [Lien de la beta du tutoriel : {1}]({2}) <-\n\n'
                      u'\n\nMerci d\'avance pour votre aide'.format(
                          naturaltime(tutorial.create_at),
                          tutorial.title,
-                         settings.SITE_URL + tutorial.get_absolute_url_beta()))
+                         settings.ZDS_APP['site']['url'] + tutorial.get_absolute_url_beta()))
                 if topic is None:
-                    forum = get_object_or_404(Forum, pk=settings.BETA_FORUM_ID)
+                    forum = get_object_or_404(Forum, pk=settings.ZDS_APP['forum']['beta_forum_id'])
 
                     create_topic(author=request.user,
                                  forum=forum,
@@ -698,7 +700,7 @@ def modify_tutorial(request):
                                  key=tutorial.pk
                                  )
                     tp = Topic.objects.get(key=tutorial.pk)
-                    bot = get_object_or_404(User, username=settings.BOT_ACCOUNT)
+                    bot = get_object_or_404(User, username=settings.ZDS_APP['member']['bot_account'])
                     private_mp = \
                         (u'Bonjour {},\n\n'
                          u'Vous venez de mettre votre tutoriel **{}** en beta. La communauté '
@@ -708,7 +710,7 @@ def modify_tutorial(request):
                          u'crée dans le forum et est accessible [ici]({})'.format(
                              request.user.username,
                              tutorial.title,
-                             settings.SITE_URL + tp.get_absolute_url()))
+                             settings.ZDS_APP['site']['url'] + tp.get_absolute_url()))
                     send_mp(
                         bot,
                         [request.user],
@@ -723,7 +725,8 @@ def modify_tutorial(request):
                          u'La beta du tutoriel est de nouveau active.'
                          u'\n\n-> [Lien de la beta du tutoriel : {0}]({1}) <-\n\n'
                          u'\n\nMerci pour vos relectures'.format(tutorial.title,
-                                                                 settings.SITE_URL + tutorial.get_absolute_url_beta()))
+                                                                 settings.ZDS_APP['site']['url']
+                                                                 + tutorial.get_absolute_url_beta()))
                     unlock_topic(topic, msg)
                     send_post(topic, msg_up)
 
@@ -735,20 +738,21 @@ def modify_tutorial(request):
             if "version" in request.POST:
                 tutorial.sha_beta = request.POST['version']
                 tutorial.save()
-                topic = Topic.objects.filter(key=tutorial.pk, forum__pk=settings.BETA_FORUM_ID).first()
+                topic = Topic.objects.filter(key=tutorial.pk,
+                                             forum__pk=settings.ZDS_APP['forum']['beta_forum_id']).first()
                 msg = \
                     (u'Bonjour à tous,\n\n'
                      u'J\'ai commencé ({0}) la rédaction d\'un tutoriel dont l\'intitulé est **{1}**.\n\n'
                      u'J\'aimerai obtenir un maximum de retour sur celui-ci, sur le fond ainsi que '
                      u'sur la forme, afin de proposer en validation un texte de qualité.'
-                     u'\n\nSi vous êtes interessé, cliquez ci-dessous '
+                     u'\n\nSi vous êtes intéressé, cliquez ci-dessous '
                      u'\n\n-> [Lien de la beta du tutoriel : {1}]({2}) <-\n\n'
                      u'\n\nMerci d\'avance pour votre aide'.format(
                          naturaltime(tutorial.create_at),
                          tutorial.title,
-                         settings.SITE_URL + tutorial.get_absolute_url_beta()))
+                         settings.ZDS_APP['site']['url'] + tutorial.get_absolute_url_beta()))
                 if topic is None:
-                    forum = get_object_or_404(Forum, pk=settings.BETA_FORUM_ID)
+                    forum = get_object_or_404(Forum, pk=settings.ZDS_APP['forum']['beta_forum_id'])
 
                     create_topic(author=request.user,
                                  forum=forum,
@@ -763,7 +767,8 @@ def modify_tutorial(request):
                          u'La beta du tutoriel a été mise à jour.'
                          u'\n\n-> [Lien de la beta du tutoriel : {0}]({1}) <-\n\n'
                          u'\n\nMerci pour vos relectures'.format(tutorial.title,
-                                                                 settings.SITE_URL + tutorial.get_absolute_url_beta()))
+                                                                 settings.ZDS_APP['site']['url']
+                                                                 + tutorial.get_absolute_url_beta()))
                     unlock_topic(topic, msg)
                     send_post(topic, msg_up)
                 messages.success(request, u"La BETA sur ce tutoriel a bien été mise à jour.")
@@ -773,7 +778,7 @@ def modify_tutorial(request):
         elif "desactiv_beta" in request.POST:
             tutorial.sha_beta = None
             tutorial.save()
-            topic = Topic.objects.filter(key=tutorial.pk, forum__pk=settings.BETA_FORUM_ID).first()
+            topic = Topic.objects.filter(key=tutorial.pk, forum__pk=settings.ZDS_APP['forum']['beta_forum_id']).first()
             if topic is not None:
                 msg = \
                     (u'Désactivation de la beta du tutoriel  **{}**'
@@ -795,7 +800,7 @@ def modify_tutorial(request):
 def view_tutorial(request, tutorial_pk, tutorial_slug):
     """Show the given offline tutorial if exists."""
 
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
 
     # Retrieve sha given by the user. This sha must to be exist. If it doesn't
     # exist, we take draft version of the article.
@@ -902,7 +907,7 @@ def view_tutorial(request, tutorial_pk, tutorial_slug):
 def view_tutorial_online(request, tutorial_pk, tutorial_slug):
     """Display a tutorial."""
 
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
 
     # If the tutorial isn't online, we raise 404 error.
     if not tutorial.on_line():
@@ -1001,7 +1006,7 @@ def view_tutorial_online(request, tutorial_pk, tutorial_slug):
 
     # Handle pagination
 
-    paginator = Paginator(notes, settings.POSTS_PER_PAGE)
+    paginator = Paginator(notes, settings.ZDS_APP['forum']['posts_per_page'])
     try:
         page_nbr = int(request.GET["page"])
     except KeyError:
@@ -1050,7 +1055,7 @@ def add_tutorial(request):
 
             # Creating a tutorial
 
-            tutorial = Tutorial()
+            tutorial = PubliableContent()
             tutorial.title = data["title"]
             tutorial.description = data["description"]
             tutorial.type = data["type"]
@@ -1062,7 +1067,7 @@ def add_tutorial(request):
                 tutorial.licence = lc
             else:
                 tutorial.licence = Licence.objects.get(
-                    pk=settings.DEFAULT_LICENCE_PK
+                    pk=settings.ZDS_APP['tutorial']['default_license_pk']
                 )
 
             # add create date
@@ -1124,12 +1129,13 @@ def add_tutorial(request):
                 introduction=data["introduction"],
                 conclusion=data["conclusion"],
                 action="add",
+                msg=request.POST.get('msg_commit', None)
             )
             return redirect(tutorial.get_absolute_url())
     else:
         form = TutorialForm(
             initial={
-                'licence': Licence.objects.get(pk=settings.DEFAULT_LICENCE_PK)
+                'licence': Licence.objects.get(pk=settings.ZDS_APP['tutorial']['default_license_pk'])
             }
         )
     return render_template("tutorial/tutorial/new.html", {"form": form})
@@ -1146,7 +1152,7 @@ def edit_tutorial(request):
         tutorial_pk = request.GET["tutoriel"]
     except KeyError:
         raise Http404
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
 
     # If the user isn't an author of the tutorial or isn't in the staff, he
     # hasn't permission to execute this method:
@@ -1185,7 +1191,7 @@ def edit_tutorial(request):
                 tutorial.licence = lc
             else:
                 tutorial.licence = Licence.objects.get(
-                    pk=settings.DEFAULT_LICENCE_PK
+                    pk=settings.ZDS_APP['tutorial']['default_license_pk']
                 )
 
             # add MAJ date
@@ -1213,7 +1219,7 @@ def edit_tutorial(request):
             tutorial.save()
             tutorial.update_children()
 
-            new_slug = os.path.join(settings.REPO_PATH, tutorial.get_phy_slug())
+            new_slug = os.path.join(settings.ZDS_APP['tutorial']['repo_path'], tutorial.get_phy_slug())
 
             maj_repo_tuto(
                 request,
@@ -1223,6 +1229,7 @@ def edit_tutorial(request):
                 introduction=data["introduction"],
                 conclusion=data["conclusion"],
                 action="maj",
+                msg=request.POST.get('msg_commit', None)
             )
             tutorial.subcategory.clear()
             for subcat in form.cleaned_data["subcategory"]:
@@ -1235,7 +1242,7 @@ def edit_tutorial(request):
             licence = Licence.objects.filter(code=json["licence"]).all()[0]
         else:
             licence = Licence.objects.get(
-                pk=settings.DEFAULT_LICENCE_PK
+                pk=settings.ZDS_APP['tutorial']['default_license_pk']
             )
         form = TutorialForm(initial={
             "title": json["title"],
@@ -1262,7 +1269,7 @@ def view_part(
 ):
     """Display a part."""
 
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
     try:
         sha = request.GET["version"]
     except KeyError:
@@ -1337,7 +1344,7 @@ def view_part_online(
 ):
     """Display a part."""
 
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
     if not tutorial.on_line():
         raise Http404
 
@@ -1403,7 +1410,7 @@ def add_part(request):
         tutorial_pk = request.GET["tutoriel"]
     except KeyError:
         raise Http404
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
 
     # Make sure it's a big tutorial, just in case
 
@@ -1427,7 +1434,9 @@ def add_part(request):
             part.conclusion = os.path.join(part.get_phy_slug(), "conclusion.md")
             part.save()
 
-            new_slug = os.path.join(settings.REPO_PATH, part.tutorial.get_phy_slug(), part.get_phy_slug())
+            new_slug = os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
+                                    part.tutorial.get_phy_slug(),
+                                    part.get_phy_slug())
 
             maj_repo_part(
                 request,
@@ -1436,6 +1445,7 @@ def add_part(request):
                 introduction=data["introduction"],
                 conclusion=data["conclusion"],
                 action="add",
+                msg=request.POST.get('msg_commit', None)
             )
             if "submit_continue" in request.POST:
                 form = PartForm()
@@ -1474,13 +1484,14 @@ def modify_part(request):
         move(part, new_pos, "position_in_tutorial", "tutorial", "get_parts")
         part.save()
 
-        new_slug_path = os.path.join(settings.REPO_PATH, part.tutorial.get_phy_slug())
+        new_slug_path = os.path.join(settings.ZDS_APP['tutorial']['repo_path'], part.tutorial.get_phy_slug())
 
         maj_repo_tuto(request,
                       old_slug_path=new_slug_path,
                       new_slug_path=new_slug_path,
                       tuto=part.tutorial,
-                      action="maj")
+                      action="maj",
+                      msg=u"Déplacement de la partie {} ".format(part.title))
     elif "delete" in request.POST:
         # Delete all chapters belonging to the part
 
@@ -1493,10 +1504,12 @@ def modify_part(request):
             if old_pos <= tut_p.position_in_tutorial:
                 tut_p.position_in_tutorial = tut_p.position_in_tutorial - 1
                 tut_p.save()
-        old_slug = os.path.join(settings.REPO_PATH, part.tutorial.get_phy_slug(), part.get_phy_slug())
+        old_slug = os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
+                                part.tutorial.get_phy_slug(),
+                                part.get_phy_slug())
         maj_repo_part(request, old_slug_path=old_slug, part=part, action="del")
 
-        new_slug_tuto_path = os.path.join(settings.REPO_PATH, part.tutorial.get_phy_slug())
+        new_slug_tuto_path = os.path.join(settings.ZDS_APP['tutorial']['repo_path'], part.tutorial.get_phy_slug())
         # Actually delete the part
         part.delete()
 
@@ -1504,7 +1517,8 @@ def modify_part(request):
                       old_slug_path=new_slug_tuto_path,
                       new_slug_path=new_slug_tuto_path,
                       tuto=part.tutorial,
-                      action="maj")
+                      action="maj",
+                      msg=u"Suppression de la partie {} ".format(part.title))
     return redirect(part.tutorial.get_absolute_url())
 
 
@@ -1552,7 +1566,9 @@ def edit_part(request):
             part.save()
             part.update_children()
 
-            new_slug = os.path.join(settings.REPO_PATH, part.tutorial.get_phy_slug(), part.get_phy_slug())
+            new_slug = os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
+                                    part.tutorial.get_phy_slug(),
+                                    part.get_phy_slug())
 
             maj_repo_part(
                 request,
@@ -1562,6 +1578,7 @@ def edit_part(request):
                 introduction=data["introduction"],
                 conclusion=data["conclusion"],
                 action="maj",
+                msg=request.POST.get('msg_commit', None)
             )
             return redirect(part.get_absolute_url())
     else:
@@ -1591,7 +1608,7 @@ def view_chapter(
 ):
     """View chapter."""
 
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
 
     try:
         sha = request.GET["version"]
@@ -1689,7 +1706,7 @@ def view_chapter_online(
 ):
     """View chapter."""
 
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
     if not tutorial.on_line():
         raise Http404
 
@@ -1823,13 +1840,15 @@ def add_chapter(request):
             if chapter.tutorial:
                 chapter_path = os.path.join(
                     os.path.join(
-                        settings.REPO_PATH, chapter.tutorial.get_phy_slug()), chapter.get_phy_slug())
+                        settings.ZDS_APP['tutorial']['repo_path'],
+                        chapter.tutorial.get_phy_slug()),
+                    chapter.get_phy_slug())
                 chapter.introduction = os.path.join(chapter.get_phy_slug(),
                                                     "introduction.md")
                 chapter.conclusion = os.path.join(chapter.get_phy_slug(),
                                                   "conclusion.md")
             else:
-                chapter_path = os.path.join(settings.REPO_PATH,
+                chapter_path = os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
                                             chapter.part.tutorial.get_phy_slug(),
                                             chapter.part.get_phy_slug(),
                                             chapter.get_phy_slug())
@@ -1846,6 +1865,7 @@ def add_chapter(request):
                 introduction=data["introduction"],
                 conclusion=data["conclusion"],
                 action="add",
+                msg=request.POST.get('msg_commit', None)
             )
             if "submit_continue" in request.POST:
                 form = ChapterForm()
@@ -1892,14 +1912,14 @@ def modify_chapter(request):
         chapter.update_position_in_tutorial()
         chapter.save()
 
-        new_slug_path = os.path.join(settings.REPO_PATH, chapter.part.tutorial.get_phy_slug())
+        new_slug_path = os.path.join(settings.ZDS_APP['tutorial']['repo_path'], chapter.part.tutorial.get_phy_slug())
 
         maj_repo_part(request,
                       old_slug_path=new_slug_path,
                       new_slug_path=new_slug_path,
                       part=chapter.part,
-                      action="maj")
-
+                      action="maj",
+                      msg=u"Déplacement du chapitre {}".format(chapter.title))
         messages.info(request, u"Le chapitre a bien été déplacé.")
     elif "delete" in data:
         old_pos = chapter.position_in_part
@@ -1920,7 +1940,8 @@ def modify_chapter(request):
                          old_slug_path=chapter.get_path(), action="del")
 
         # Then delete the chapter
-        new_slug_path_part = os.path.join(settings.REPO_PATH, chapter.part.tutorial.get_phy_slug())
+        new_slug_path_part = os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
+                                          chapter.part.tutorial.get_phy_slug())
         chapter.delete()
 
         # Update all the position_in_tutorial fields for the next chapters
@@ -1934,7 +1955,8 @@ def modify_chapter(request):
                       old_slug_path=new_slug_path_part,
                       new_slug_path=new_slug_path_part,
                       part=chapter.part,
-                      action="maj")
+                      action="maj",
+                      msg=u"Suppression du chapitre {}".format(chapter.title))
         messages.info(request, u"Le chapitre a bien été supprimé.")
 
         return redirect(parent.get_absolute_url())
@@ -1991,9 +2013,11 @@ def edit_chapter(request):
 
             if chapter.part:
                 if chapter.tutorial:
-                    new_slug = os.path.join(settings.REPO_PATH, chapter.tutorial.get_phy_slug(), chapter.get_phy_slug())
+                    new_slug = os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
+                                            chapter.tutorial.get_phy_slug(),
+                                            chapter.get_phy_slug())
                 else:
-                    new_slug = os.path.join(settings.REPO_PATH,
+                    new_slug = os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
                                             chapter.part.tutorial.get_phy_slug(),
                                             chapter.part.get_phy_slug(),
                                             chapter.get_phy_slug())
@@ -2017,6 +2041,7 @@ def edit_chapter(request):
                 introduction=data["introduction"],
                 conclusion=data["conclusion"],
                 action="maj",
+                msg=request.POST.get('msg_commit', None)
             )
             return redirect(chapter.get_absolute_url())
     else:
@@ -2066,7 +2091,7 @@ def add_extract(request):
             if form.is_valid():
                 data = form.data
                 extract = Extract()
-                extract.chapter = chapter
+                extract.container = chapter
                 extract.position_in_chapter = chapter.get_extract_count() + 1
                 extract.title = data["title"]
                 extract.save()
@@ -2074,7 +2099,8 @@ def add_extract(request):
                 extract.save()
                 maj_repo_extract(request, new_slug_path=extract.get_path(),
                                  extract=extract, text=data["text"],
-                                 action="add")
+                                 action="add",
+                                 msg=request.POST.get('msg_commit', None))
                 return redirect(extract.get_absolute_url())
     else:
         form = ExtractForm()
@@ -2092,15 +2118,15 @@ def edit_extract(request):
     except KeyError:
         raise Http404
     extract = get_object_or_404(Extract, pk=extract_pk)
-    part = extract.chapter.part
+    part = extract.container.part
 
     # If part exist, we check if the user is in authors of the tutorial of the
     # part or If part doesn't exist, we check if the user is in authors of the
     # tutorial of the chapter.
 
     if part and request.user \
-            not in extract.chapter.part.tutorial.authors.all() or not part \
-            and request.user not in extract.chapter.tutorial.authors.all():
+            not in extract.container.part.tutorial.authors.all() or not part \
+            and request.user not in extract.container.tutorial.authors.all():
 
         # If the user isn't an author or a staff, we raise an exception.
 
@@ -2153,6 +2179,7 @@ def edit_extract(request):
                     extract=extract,
                     text=data["text"],
                     action="maj",
+                    msg=request.POST.get('msg_commit', None)
                 )
                 return redirect(extract.get_absolute_url())
     else:
@@ -2176,10 +2203,10 @@ def modify_extract(request):
     except KeyError:
         raise Http404
     extract = get_object_or_404(Extract, pk=extract_pk)
-    chapter = extract.chapter
+    chapter = extract.container
     if "delete" in data:
         pos_current_extract = extract.position_in_chapter
-        for extract_c in extract.chapter.get_extracts():
+        for extract_c in extract.container.get_extracts():
             if pos_current_extract <= extract_c.position_in_chapter:
                 extract_c.position_in_chapter = extract_c.position_in_chapter \
                     - 1
@@ -2189,11 +2216,11 @@ def modify_extract(request):
 
         old_slug = extract.get_path()
 
-        if extract.chapter.tutorial:
-            new_slug_path_chapter = os.path.join(settings.REPO_PATH,
-                                                 extract.chapter.tutorial.get_phy_slug())
+        if extract.container.tutorial:
+            new_slug_path_chapter = os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
+                                                 extract.container.tutorial.get_phy_slug())
         else:
-            new_slug_path_chapter = os.path.join(settings.REPO_PATH,
+            new_slug_path_chapter = os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
                                                  chapter.part.tutorial.get_phy_slug(),
                                                  chapter.part.get_phy_slug(),
                                                  chapter.get_phy_slug())
@@ -2205,7 +2232,8 @@ def modify_extract(request):
                          old_slug_path=new_slug_path_chapter,
                          new_slug_path=new_slug_path_chapter,
                          chapter=chapter,
-                         action="maj")
+                         action="maj",
+                         msg=u"Suppression de l'extrait {}".format(extract.title))
         return redirect(chapter.get_absolute_url())
     elif "move" in data:
         try:
@@ -2217,11 +2245,11 @@ def modify_extract(request):
         move(extract, new_pos, "position_in_chapter", "chapter", "get_extracts")
         extract.save()
 
-        if extract.chapter.tutorial:
-            new_slug_path = os.path.join(settings.REPO_PATH,
-                                         extract.chapter.tutorial.get_phy_slug())
+        if extract.container.tutorial:
+            new_slug_path = os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
+                                         extract.container.tutorial.get_phy_slug())
         else:
-            new_slug_path = os.path.join(settings.REPO_PATH,
+            new_slug_path = os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
                                          chapter.part.tutorial.get_phy_slug(),
                                          chapter.part.get_phy_slug(),
                                          chapter.get_phy_slug())
@@ -2230,7 +2258,8 @@ def modify_extract(request):
                          old_slug_path=new_slug_path,
                          new_slug_path=new_slug_path,
                          chapter=chapter,
-                         action="maj")
+                         action="maj",
+                         msg=u"Déplacement de l'extrait {}".format(extract.title))
         return redirect(extract.get_absolute_url())
     raise Http404
 
@@ -2242,7 +2271,7 @@ def find_tuto(request, pk_user):
         type = None
     display_user = get_object_or_404(User, pk=pk_user)
     if type == "beta":
-        tutorials = Tutorial.objects.all().filter(
+        tutorials = PubliableContent.objects.all().filter(
             authors__in=[display_user],
             sha_beta__isnull=False).exclude(sha_beta="").order_by("-pubdate")
 
@@ -2255,7 +2284,7 @@ def find_tuto(request, pk_user):
         return render_template("tutorial/member/beta.html",
                                {"tutorials": tuto_versions, "usr": display_user})
     else:
-        tutorials = Tutorial.objects.all().filter(
+        tutorials = PubliableContent.objects.all().filter(
             authors__in=[display_user],
             sha_public__isnull=False).exclude(sha_public="").order_by("-pubdate")
 
@@ -2314,7 +2343,7 @@ def import_content(
     images,
     logo,
 ):
-    tutorial = Tutorial()
+    tutorial = PubliableContent()
 
     # add create date
 
@@ -2353,7 +2382,7 @@ def import_content(
         userg.save()
         tutorial.gallery = gal
         tutorial.save()
-        tuto_path = os.path.join(settings.REPO_PATH, tutorial.get_phy_slug())
+        tuto_path = os.path.join(settings.ZDS_APP['tutorial']['repo_path'], tutorial.get_phy_slug())
         mapping = upload_images(images, tutorial)
         maj_repo_tuto(
             request,
@@ -2379,7 +2408,9 @@ def import_content(
             part.save()
             part.introduction = os.path.join(part.get_phy_slug(), "introduction.md")
             part.conclusion = os.path.join(part.get_phy_slug(), "conclusion.md")
-            part_path = os.path.join(settings.REPO_PATH, part.tutorial.get_phy_slug(), part.get_phy_slug())
+            part_path = os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
+                                     part.tutorial.get_phy_slug(),
+                                     part.get_phy_slug())
             part.save()
             maj_repo_part(
                 request,
@@ -2426,7 +2457,7 @@ def import_content(
                     part.get_phy_slug(),
                     chapter.get_phy_slug(),
                     "conclusion.md")
-                chapter_path = os.path.join(settings.REPO_PATH,
+                chapter_path = os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
                                             chapter.part.tutorial.get_phy_slug(),
                                             chapter.part.get_phy_slug(),
                                             chapter.get_phy_slug())
@@ -2463,7 +2494,7 @@ def import_content(
                     extract = Extract()
                     extract.title = extract_title.text.strip()
                     extract.position_in_chapter = extract_count
-                    extract.chapter = chapter
+                    extract.container = chapter
                     extract.save()
                     extract.text = extract.get_path(relative=True)
                     extract.save()
@@ -2509,7 +2540,7 @@ def import_content(
         userg.save()
         tutorial.gallery = gal
         tutorial.save()
-        tuto_path = os.path.join(settings.REPO_PATH, tutorial.get_phy_slug())
+        tuto_path = os.path.join(settings.ZDS_APP['tutorial']['repo_path'], tutorial.get_phy_slug())
         mapping = upload_images(images, tutorial)
         maj_repo_tuto(
             request,
@@ -2532,7 +2563,7 @@ def import_content(
             extract = Extract()
             extract.title = extract_title.text.strip()
             extract.position_in_chapter = extract_count
-            extract.chapter = chapter
+            extract.container = chapter
             extract.save()
             extract.text = extract.get_path(relative=True)
             extract.save()
@@ -2559,18 +2590,13 @@ def import_tuto(request):
         # for import tuto
         if "import-tuto" in request.POST:
             form = ImportForm(request.POST, request.FILES)
-            form_archive = ImportArchiveForm(user=request.user)
-            if "file" in request.FILES:
-                filename = str(request.FILES["file"])
-                ext = filename.split(".")[-1]
-                if ext == "tuto":
-                    import_content(request, request.FILES["file"],
-                                   request.FILES["images"], "")
-                else:
-                    raise Http404
-            return redirect(reverse("zds.member.views.tutorials"))
+            if form.is_valid():
+                import_content(request, request.FILES["file"], request.FILES["images"], "")
+                return redirect(reverse("zds.member.views.tutorials"))
+            else:
+                form_archive = ImportArchiveForm(user=request.user)
+
         elif "import-archive" in request.POST:
-            form = ImportForm()
             form_archive = ImportArchiveForm(request.user, request.POST, request.FILES)
             if form_archive.is_valid():
                 (check, reason) = import_archive(request)
@@ -2580,9 +2606,8 @@ def import_tuto(request):
                     messages.success(request, reason)
                     return redirect(reverse("zds.member.views.tutorials"))
             else:
-                return render_template("tutorial/tutorial/import.html",
-                                       {"form": form,
-                                        "form_archive": form_archive})
+                form = ImportForm()
+
     else:
         form = ImportForm()
         form_archive = ImportArchiveForm(user=request.user)
@@ -2602,7 +2627,6 @@ def import_tuto(request):
 
 
 # Handling repo
-
 def maj_repo_tuto(
     request,
     old_slug_path=None,
@@ -2611,6 +2635,7 @@ def maj_repo_tuto(
     introduction=None,
     conclusion=None,
     action=None,
+    msg=None,
 ):
 
     if action == "del":
@@ -2620,12 +2645,14 @@ def maj_repo_tuto(
             if old_slug_path != new_slug_path:
                 shutil.move(old_slug_path, new_slug_path)
                 repo = Repo(new_slug_path)
-            msg = "Modification du tutoriel"
+            msg = u"Modification du tutoriel : «{}» {} {}".format(tuto.title, get_sep(msg), get_text_is_empty(msg))\
+                .strip()
+
         elif action == "add":
             if not os.path.exists(new_slug_path):
                 os.makedirs(new_slug_path, mode=0o777)
             repo = Repo.init(new_slug_path, bare=False)
-            msg = "Creation du tutoriel"
+            msg = u"Création du tutoriel «{}» {} {}".format(tuto.title, get_sep(msg), get_text_is_empty(msg)).strip()
         repo = Repo(new_slug_path)
         index = repo.index
         man_path = os.path.join(new_slug_path, "manifest.json")
@@ -2644,9 +2671,9 @@ def maj_repo_tuto(
         aut_user = str(request.user.pk)
         aut_email = str(request.user.email)
         if aut_email is None or aut_email.strip() == "":
-            aut_email = "inconnu@zestedesavoir.com"
+            aut_email = "inconnu@{}".format(settings.ZDS_APP['site']['dns'])
         com = index.commit(
-            msg.encode("utf-8"),
+            msg,
             author=Actor(
                 aut_user,
                 aut_email),
@@ -2665,23 +2692,25 @@ def maj_repo_part(
     introduction=None,
     conclusion=None,
     action=None,
+    msg=None,
 ):
 
     repo = Repo(part.tutorial.get_path())
     index = repo.index
-    msg = "repo partie"
     if action == "del":
         shutil.rmtree(old_slug_path)
-        msg = "Suppresion de la partie "
+        msg = u"Suppresion de la partie : «{}»".format(part.title)
     else:
         if action == "maj":
             if old_slug_path != new_slug_path:
                 os.rename(old_slug_path, new_slug_path)
-                msg = "Modification de la partie "
+
+            msg = u"Modification de la partie «{}» {} {}".format(part.title, get_sep(msg), get_text_is_empty(msg))\
+                .strip()
         elif action == "add":
             if not os.path.exists(new_slug_path):
                 os.makedirs(new_slug_path, mode=0o777)
-            msg = "Creation de la partie "
+            msg = u"Création de la partie «{}» {} {}".format(part.title, get_sep(msg), get_text_is_empty(msg)).strip()
         index.add([part.get_phy_slug()])
         man_path = os.path.join(part.tutorial.get_path(), "manifest.json")
         part.tutorial.dump_json(path=man_path)
@@ -2700,9 +2729,9 @@ def maj_repo_part(
     aut_user = str(request.user.pk)
     aut_email = str(request.user.email)
     if aut_email is None or aut_email.strip() == "":
-        aut_email = "inconnu@zestedesavoir.com"
+        aut_email = "inconnu@{}".format(settings.ZDS_APP['site']['litteral_name'])
     com_part = index.commit(
-        msg.encode("utf-8"),
+        msg,
         author=Actor(
             aut_user,
             aut_email),
@@ -2722,28 +2751,34 @@ def maj_repo_chapter(
     introduction=None,
     conclusion=None,
     action=None,
+    msg=None,
 ):
 
     if chapter.tutorial:
-        repo = Repo(os.path.join(settings.REPO_PATH, chapter.tutorial.get_phy_slug()))
+        repo = Repo(os.path.join(settings.ZDS_APP['tutorial']['repo_path'], chapter.tutorial.get_phy_slug()))
         ph = None
     else:
-        repo = Repo(os.path.join(settings.REPO_PATH, chapter.part.tutorial.get_phy_slug()))
+        repo = Repo(os.path.join(settings.ZDS_APP['tutorial']['repo_path'], chapter.part.tutorial.get_phy_slug()))
         ph = os.path.join(chapter.part.get_phy_slug(), chapter.get_phy_slug())
     index = repo.index
-    msg = "repo chapitre"
     if action == "del":
         shutil.rmtree(old_slug_path)
-        msg = "Suppresion du chapitre"
+        msg = u"Suppresion du chapitre : «{}»".format(chapter.title)
     else:
         if action == "maj":
             if old_slug_path != new_slug_path:
                 os.rename(old_slug_path, new_slug_path)
-            msg = "Modification du chapitre"
+            if chapter.tutorial:
+                msg = u"Modification du tutoriel «{}» " \
+                      u"{} {}".format(chapter.tutorial.title, get_sep(msg), get_text_is_empty(msg)).strip()
+            else:
+                msg = u"Modification du chapitre «{}» " \
+                      u"{} {}".format(chapter.title, get_sep(msg), get_text_is_empty(msg)).strip()
         elif action == "add":
             if not os.path.exists(new_slug_path):
                 os.makedirs(new_slug_path, mode=0o777)
-            msg = "Creation du chapitre"
+            msg = u"Création du chapitre «{}» {} {}".format(chapter.title, get_sep(msg), get_text_is_empty(msg))\
+                .strip()
         if introduction is not None:
             intro = open(os.path.join(new_slug_path, "introduction.md"), "w")
             intro.write(smart_str(introduction).strip())
@@ -2768,9 +2803,9 @@ def maj_repo_chapter(
     aut_user = str(request.user.pk)
     aut_email = str(request.user.email)
     if aut_email is None or aut_email.strip() == "":
-        aut_email = "inconnu@zestedesavoir.com"
+        aut_email = "inconnu@{}".format(settings.ZDS_APP['site']['dns'])
     com_ch = index.commit(
-        msg.encode("utf-8"),
+        msg,
         author=Actor(
             aut_user,
             aut_email),
@@ -2793,18 +2828,21 @@ def maj_repo_extract(
     extract=None,
     text=None,
     action=None,
+    msg=None,
 ):
 
     if extract.chapter.tutorial:
-        repo = Repo(os.path.join(settings.REPO_PATH, extract.chapter.tutorial.get_phy_slug()))
+        repo = Repo(os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
+                                 extract.chapter.tutorial.get_phy_slug()))
     else:
-        repo = Repo(os.path.join(settings.REPO_PATH, extract.chapter.part.tutorial.get_phy_slug()))
+        repo = Repo(os.path.join(settings.ZDS_APP['tutorial']['repo_path'],
+                                 extract.chapter.part.tutorial.get_phy_slug()))
     index = repo.index
 
     chap = extract.chapter
 
     if action == "del":
-        msg = "Suppression de l'exrait "
+        msg = u"Suppression de l'extrait : «{}»".format(extract.title)
         extract.delete()
         if old_slug_path:
             os.remove(old_slug_path)
@@ -2812,30 +2850,31 @@ def maj_repo_extract(
         if action == "maj":
             if old_slug_path != new_slug_path:
                 os.rename(old_slug_path, new_slug_path)
-            msg = "Modification de l'exrait "
+            msg = u"Mise à jour de l'extrait «{}» {} {}".format(extract.title, get_sep(msg), get_text_is_empty(msg))\
+                .strip()
+        elif action == "add":
+            msg = u"Création de l'extrait «{}» {} {}".format(extract.title, get_sep(msg), get_text_is_empty(msg))\
+                .strip()
         ext = open(new_slug_path, "w")
         ext.write(smart_str(text).strip())
         ext.close()
         index.add([extract.get_path(relative=True)])
-        msg = "Mise a jour de l'exrait "
 
     # update manifest
-
     if chap.tutorial:
-        man_path = os.path.join(chap.tutorial.get_path(),
-                                "manifest.json")
+        man_path = os.path.join(chap.tutorial.get_path(), "manifest.json")
         chap.tutorial.dump_json(path=man_path)
     else:
-        man_path = os.path.join(chap.part.tutorial.get_path(),
-                                "manifest.json")
+        man_path = os.path.join(chap.part.tutorial.get_path(), "manifest.json")
         chap.part.tutorial.dump_json(path=man_path)
+
     index.add(["manifest.json"])
     aut_user = str(request.user.pk)
     aut_email = str(request.user.email)
     if aut_email is None or aut_email.strip() == "":
-        aut_email = "inconnu@zestedesavoir.com"
+        aut_email = "inconnu@{}".format(settings.ZDS_APP['site']['dns'])
     com_ex = index.commit(
-        msg.encode("utf-8"),
+        msg,
         author=Actor(
             aut_user,
             aut_email),
@@ -2861,9 +2900,9 @@ def insert_into_zip(zip_file, git_tree):
 
 def download(request):
     """Download a tutorial."""
-    tutorial = get_object_or_404(Tutorial, pk=request.GET["tutoriel"])
+    tutorial = get_object_or_404(PubliableContent, pk=request.GET["tutoriel"])
 
-    repo_path = os.path.join(settings.REPO_PATH, tutorial.get_phy_slug())
+    repo_path = os.path.join(settings.ZDS_APP['tutorial']['repo_path'], tutorial.get_phy_slug())
     repo = Repo(repo_path)
     sha = tutorial.sha_draft
     if 'online' in request.GET and tutorial.on_line():
@@ -2885,7 +2924,7 @@ def download(request):
 def download_markdown(request):
     """Download a markdown tutorial."""
 
-    tutorial = get_object_or_404(Tutorial, pk=request.GET["tutoriel"])
+    tutorial = get_object_or_404(PubliableContent, pk=request.GET["tutoriel"])
     phy_path = os.path.join(
         tutorial.get_prod_path(),
         tutorial.slug +
@@ -2901,7 +2940,7 @@ def download_markdown(request):
 def download_html(request):
     """Download a pdf tutorial."""
 
-    tutorial = get_object_or_404(Tutorial, pk=request.GET["tutoriel"])
+    tutorial = get_object_or_404(PubliableContent, pk=request.GET["tutoriel"])
     phy_path = os.path.join(
         tutorial.get_prod_path(),
         tutorial.slug +
@@ -2919,7 +2958,7 @@ def download_html(request):
 def download_pdf(request):
     """Download a pdf tutorial."""
 
-    tutorial = get_object_or_404(Tutorial, pk=request.GET["tutoriel"])
+    tutorial = get_object_or_404(PubliableContent, pk=request.GET["tutoriel"])
     phy_path = os.path.join(
         tutorial.get_prod_path(),
         tutorial.slug +
@@ -2937,7 +2976,7 @@ def download_pdf(request):
 def download_epub(request):
     """Download an epub tutorial."""
 
-    tutorial = get_object_or_404(Tutorial, pk=request.GET["tutoriel"])
+    tutorial = get_object_or_404(PubliableContent, pk=request.GET["tutoriel"])
     phy_path = os.path.join(
         tutorial.get_prod_path(),
         tutorial.slug +
@@ -3180,7 +3219,7 @@ def answer(request):
 
     # Retrieve current tutorial.
 
-    tutorial = get_object_or_404(Tutorial, pk=tutorial_pk)
+    tutorial = get_object_or_404(PubliableContent, pk=tutorial_pk)
 
     # Making sure reactioning is allowed
 
@@ -3206,7 +3245,7 @@ def answer(request):
     # Retrieve lasts notes of the current tutorial.
     notes = Note.objects.filter(tutorial=tutorial) \
         .prefetch_related() \
-        .order_by("-pubdate")[:settings.POSTS_PER_PAGE]
+        .order_by("-pubdate")[:settings.ZDS_APP['forum']['posts_per_page']]
 
     # User would like preview his post or post a new note on the tutorial.
 
@@ -3290,29 +3329,32 @@ def solve_alert(request):
 
     if not request.user.has_perm("tutorial.change_note"):
         raise PermissionDenied
+
     alert = get_object_or_404(Alert, pk=request.POST["alert_pk"])
     note = Note.objects.get(pk=alert.comment.id)
-    bot = get_object_or_404(User, username=settings.BOT_ACCOUNT)
-    msg = \
-        (u'Bonjour {0},'
-         u'Vous recevez ce message car vous avez signalé le message de *{1}*, '
-         u'dans le tutoriel [{2}]({3}). Votre alerte a été traitée par **{4}** '
-         u'et il vous a laissé le message suivant :'
-         u'\n\n> {5}\n\nToute l\'équipe de la modération vous remercie !'.format(
-             alert.author.username,
-             note.author.username,
-             note.tutorial.title,
-             settings.SITE_URL + note.get_absolute_url(),
-             request.user.username,
-             request.POST["text"],))
-    send_mp(
-        bot,
-        [alert.author],
-        u"Résolution d'alerte : {0}".format(note.tutorial.title),
-        "",
-        msg,
-        False,
-    )
+
+    if request.POST["text"] != "":
+        bot = get_object_or_404(User, username=settings.ZDS_APP['member']['bot_account'])
+        msg = \
+            (u'Bonjour {0},'
+             u'Vous recevez ce message car vous avez signalé le message de *{1}*, '
+             u'dans le tutoriel [{2}]({3}). Votre alerte a été traitée par **{4}** '
+             u'et il vous a laissé le message suivant :'
+             u'\n\n> {5}\n\nToute l\'équipe de la modération vous remercie !'.format(
+                 alert.author.username,
+                 note.author.username,
+                 note.tutorial.title,
+                 settings.ZDS_APP['site']['url'] + note.get_absolute_url(),
+                 request.user.username,
+                 request.POST["text"],))
+        send_mp(
+            bot,
+            [alert.author],
+            u"Résolution d'alerte : {0}".format(note.tutorial.title),
+            "",
+            msg,
+            False,
+        )
     alert.delete()
     messages.success(request, u"L'alerte a bien été résolue")
     return redirect(note.get_absolute_url())
@@ -3330,7 +3372,7 @@ def edit_note(request):
     note = get_object_or_404(Note, pk=note_pk)
     g_tutorial = None
     if note.position >= 1:
-        g_tutorial = get_object_or_404(Tutorial, pk=note.tutorial.pk)
+        g_tutorial = get_object_or_404(PubliableContent, pk=note.tutorial.pk)
 
     # Making sure the user is allowed to do that. Author of the note must to be
     # the user logged.

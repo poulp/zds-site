@@ -4,7 +4,7 @@ from django import template
 from django.conf import settings
 import itertools
 from zds.forum.models import Forum, Topic
-from zds.tutorial.models import Tutorial
+from zds.tutorial.models import PubliableContent
 from zds.utils.models import CategorySubCategory, Tag
 
 
@@ -51,7 +51,7 @@ def top_categories(user):
     for key, value in sort_list:
         top_tag.append(key)
         cpt += 1
-        if cpt >= settings.TOP_TAG_MAX:
+        if cpt >= settings.ZDS_APP['forum']['top_tag_max']:
             break
 
     tags = Tag.objects.filter(pk__in=top_tag)
@@ -63,7 +63,7 @@ def top_categories(user):
 def top_categories_tuto(user):
 
     cats = {}
-    subcats_tutos = Tutorial.objects.values('subcategory').filter(sha_public__isnull=False).all()
+    subcats_tutos = PubliableContent.objects.values('subcategory').filter(sha_public__isnull=False).all()
     catsubcats = CategorySubCategory.objects \
         .filter(is_main=True)\
         .filter(subcategory__in=subcats_tutos)\

@@ -7,7 +7,7 @@ from django.contrib.sitemaps import GenericSitemap, Sitemap
 
 from zds.article.models import Article
 from zds.forum.models import Category, Forum, Topic
-from zds.tutorial.models import Tutorial
+from zds.tutorial.models import PubliableContent
 
 from . import settings
 
@@ -18,7 +18,7 @@ class TutoSitemap(Sitemap):
     priority = 1
 
     def items(self):
-        return Tutorial.objects.filter(sha_public__isnull=False)
+        return PubliableContent.objects.filter(sha_public__isnull=False)
 
     def lastmod(self, tuto):
         if tuto.update is None:
@@ -81,8 +81,6 @@ urlpatterns = patterns('',
                        url(r'^galerie/', include('zds.gallery.urls')),
                        url(r'^rechercher/', include('zds.search.urls')),
                        url(r'^munin/', include('zds.munin.urls')),
-
-                       url(r'^captcha/', include('captcha.urls')),
 
                        ('^munin/', include('munin.urls')),
 
