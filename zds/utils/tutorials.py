@@ -58,6 +58,8 @@ def export_part(part):
         .filter(part=part)\
         .order_by('position_in_part')
     for chapter in chapters:
+        # extract will be copied twice here
+        # TODO find another way to export chapter
         dct['chapters'].append(export_chapter(chapter))
 
     return dct
