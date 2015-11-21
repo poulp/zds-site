@@ -501,6 +501,9 @@ ZDS_APP = {
     },
     'paginator': {
         'folding_limit': 4
+    },
+    'poll': {
+        'poll_per_page': 10
     }
 }
 
